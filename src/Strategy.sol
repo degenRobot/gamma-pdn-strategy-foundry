@@ -4,8 +4,20 @@ pragma solidity 0.8.18;
 import {BaseStrategy, ERC20} from "@tokenized-strategy/BaseStrategy.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 // Import interfaces for many popular DeFi projects, or add your own!
 //import "../interfaces/<protocol>/<Interface>.sol";
+
+import {IAToken} from "./interfaces/aave/IAToken.sol";
+import {IVariableDebtToken} from "./interfaces/aave/IVariableDebtToken.sol";
+import {IPool} from "./interfaces/aave/IPool.sol";
+import {IAaveOracle} from "./interfaces/aave/IAaveOracle.sol";
+import {IGammaVault} from "./interfaces/gamma/IGammaVault.sol";
+import {IMasterchef} from "./interfaces/quickswap/IMasterchef.sol";
+import {IAlgebraPool} from "./interfaces/quickswap/IAlgebraPool.sol";
+import {IUniswapV2Router01} from "./interfaces/quickswap/IUniswap.sol";
+import {IRouter} from "./interfaces/quickswap/IRouter.sol";
 
 /**
  * The `TokenizedStrategy` variable can be used to retrieve the strategies
@@ -28,6 +40,43 @@ contract Strategy is BaseStrategy {
         string memory _name
     ) BaseStrategy(_asset, _name) {}
 
+    uint256 public collatUpper = 6700;
+    uint256 public collatTarget = 6000;
+    uint256 public collatLower = 5300;
+    uint256 public debtUpper = 10190;
+    uint256 public debtLower = 9810;
+    uint256 public rebalancePercent = 10000; // 100% (how far does rebalance of debt move towards 100% from threshold)
+
+    // protocal limits & upper, target and lower thresholds for ratio of debt to collateral
+    uint256 public collatLimit = 7500;
+    uint256 public priceSourceDiffKeeper = 100;
+
+    uint256 public slippageAdj = 9900; // 99%
+    uint256 public basisPrecision = 10000;
+    uint8 public pid; 
+
+    bool public doPriceCheck = true;
+    bool public isPaused = false;
+
+    address public weth;
+    IERC20 public short;
+    uint8 public wantDecimals;
+    uint8 public shortDecimals;
+    //IUniswapV2Pair public wantShortLP; // This is public because it helps with unit testing
+    IERC20 public farmToken;
+    // Contract Interfaces
+    //IUniswapV2Router01 public router;
+    //IStrategyInsurance public insurance;
+    IUniswapV2Router01 public router;
+    IRouter public v3Router;
+    IPool public pool;
+    IAToken public aToken;
+    IVariableDebtToken public debtToken;
+    IAaveOracle public oracle;
+    IGammaVault public gammaVault;
+    IMasterchef public farmMasterChef;
+    IAlgebraPool public quickswapPool;
+
     /*//////////////////////////////////////////////////////////////
                 NEEDED TO BE OVERRIDDEN BY STRATEGIST
     //////////////////////////////////////////////////////////////*/
@@ -44,9 +93,53 @@ contract Strategy is BaseStrategy {
      * to deposit in the yield source.
      */
     function _deployFunds(uint256 _amount) internal override {
-        // TODO: implement deposit logic EX:
-        //
-        //      lendingPool.deposit(address(asset), _amount ,0);
+        uint256 oPrice = getOraclePrice();
+        uint256 borrow = (collatTarget * _amount / basisPrecision) * 1e18 / oPrice;
+        uint256 debtAllocation = borrow * oPrice / 1e18;
+        uint256 lendNeeded = _amount - (debtAllocation);
+        _lendWant(lendNeeded);
+        _borrow(borrow);
+        _addToLP(borrow);
+
+    }
+
+    function _lendWant(uint256 amount) internal {
+        pool.supply(address(asset), amount, address(this), 0);
+    }
+
+    function _borrow(uint256 borrowAmount) internal {
+        pool.borrow(address(short), borrowAmount, 2, 0, address(this));
+    }
+
+    function _addToLP(uint256 _amountShort) internal {
+        uint256 totalWant; 
+        uint256 totalShort;
+        if (quickswapPool.token0() == address(asset)) {
+            (totalWant, totalShort) = gammaVault.getTotalAmounts();
+        } else {
+             (totalShort, totalWant) = gammaVault.getTotalAmounts();           
+        }
+        uint256 balWant = asset.balanceOf(address(this));
+        uint256 _amountWant = _amountShort * totalWant / totalShort;
+        if (balWant < _amountWant) {
+            _amountWant = balWant;
+        } else {
+            _amountShort = balWant * totalShort / totalWant;
+        }
+        uint256 _amount0;
+        uint256 _amount1;
+        if (quickswapPool.token0() == address(asset)) {
+            _amount0 = _amountWant;
+            _amount1 = _amountShort;
+        } else {
+            _amount0 = _amountShort;           
+            _amount1 = _amountWant;
+        }
+        uint256[4] memory _minAmounts;
+
+
+        // TO DO ADD TO LP Position 
+        gammaVault.deposit(_amount0, _amount1, address(this), address(this), _minAmounts);
     }
 
     /**
@@ -71,9 +164,154 @@ contract Strategy is BaseStrategy {
      * @param _amount, The amount of 'asset' to be freed.
      */
     function _freeFunds(uint256 _amount) internal override {
-        // TODO: implement withdraw logic EX:
-        //
-        //      lendingPool.withdraw(address(asset), _amount);
+        uint256 balanceWant = balanceOfWant();
+        require(_testPriceSource(priceSourceDiffKeeper));
+        if (_amount <= balanceWant) {
+            return;
+        }
+
+        uint256 balanceDeployed = balanceDeployed();
+
+        // stratPercent: Percentage of the deployed capital we want to liquidate.
+        uint256 stratPercent =
+            (_amount - balanceWant) * basisPrecision / balanceDeployed;
+
+        if (stratPercent > 9500) {
+            // If this happened, we just undeploy the lot
+            // and it'll be redeployed during the next harvest.
+            _liquidateAllPositionsInternal();
+        } else {
+            // liquidate all to lend
+            _liquidateAllToLend();
+            // Only rebalance if more than 5% is being liquidated
+            // to save on gas
+            uint256 slippage = 0;
+            if (stratPercent > 500) {
+                // swap to ensure the debt ratio isn't negatively affected
+                uint256 shortInShort = balanceShort();
+                uint256 debtInShort = balanceDebtInShort();
+                if (debtInShort > shortInShort) {
+                    uint256 debt =
+                        _convertShortToWantLP(debtInShort - shortInShort);
+                    uint256 swapAmountWant =
+                        debt * stratPercent / basisPrecision;
+                    _redeemWant(swapAmountWant);
+                    slippage = _swapExactWantShort(swapAmountWant);
+                } else {
+                    (, slippage) = _swapExactShortWant(
+                        (shortInShort - debtInShort) * stratPercent / basisPrecision
+                    );
+                }
+            }
+            _repayDebt();
+
+            // Redeploy the strat
+            //_deployFromLend(balanceDeployed - _amount);
+        }
+
+    }
+
+    function _liquidateAllPositionsInternal() internal {
+
+    }
+
+    function _liquidateAllToLend() internal {
+        
+    }
+
+    function _testPriceSource(uint256 priceDiff) internal view returns (bool) {
+        if (doPriceCheck) {
+            uint256 oPrice = getOraclePrice();
+            uint256 lpPrice = getLpPrice();
+            uint256 priceSourceRatio = oPrice*(basisPrecision)/(lpPrice);
+            return (priceSourceRatio > basisPrecision - (priceDiff) &&
+                priceSourceRatio < basisPrecision + (priceDiff));
+        }
+        return true;
+    }
+
+    function balanceOfWant() public view returns (uint256) {
+        return (asset.balanceOf(address(this)));
+    }
+
+    // calculate total value of vault assets
+    function balanceDeployed() public view returns (uint256) {
+        return
+            balanceLend() + (balanceLp()) - (
+                balanceDebt()
+            );
+    }
+
+    function balanceLend() public view returns (uint256) {
+        return aToken.balanceOf(address(this));
+    }
+
+    function balanceLp() public view returns (uint256) {
+        uint256 totalWant; 
+        uint256 totalShort;
+        if (quickswapPool.token0() == address(asset)) {
+            (totalWant, totalShort) = gammaVault.getTotalAmounts();
+        } else {
+             (totalShort, totalWant) = gammaVault.getTotalAmounts();           
+        }
+
+        (uint256 lpTokens, ) = farmMasterChef.userInfo(pid, address(this)); // number of LP Tokens user has in farm 
+        uint256 lpValue = (totalWant + (totalShort * getOraclePrice() / 1e18)) * (lpTokens + gammaVault.balanceOf(address(this))) / gammaVault.totalSupply();
+        return(lpValue);
+    }
+
+    function balanceDebt() public view returns (uint256) {
+        return _convertShortToWantLP(balanceDebtInShort());
+    }
+
+    function balanceDebtInShort() public view returns (uint256) {
+        // Each debtToken is pegged 1:1 with the short token
+        return debtToken.balanceOf(address(this));
+    }
+
+    function balanceShort() public view returns (uint256) {
+        return (short.balanceOf(address(this)));
+    }
+
+    function getOraclePrice() public view returns (uint256) {
+        uint256 shortOPrice = oracle.getAssetPrice(address(short));
+        uint256 wantOPrice = oracle.getAssetPrice(address(asset));
+        return
+            shortOPrice*(10**(wantDecimals + (18) - (shortDecimals)))/(
+                wantOPrice
+            );
+    }
+
+    function getLpPrice() public view returns (uint256) {
+        (uint160 currentPrice, , , , , , ) = quickswapPool.globalState(); 
+        uint256 price;
+        if (quickswapPool.token0() == address(asset)) { 
+            price = ((2 ** 96) * (2 ** 96)) * 1e18 / (uint256(currentPrice) * uint256(currentPrice));
+        } else {
+            price = 1e18 * uint256(currentPrice) * uint256(currentPrice) / ((2 ** 96) * (2 ** 96));
+        }
+        
+        // TO DO CONVERT PRICE TO SAME FORMAT AS ORACLE PRICE 
+        return price;
+    }
+
+    // debt ratio - used to trigger rebalancing of debt
+    function calcDebtRatio() public view returns (uint256) {
+        uint256 totalShort;
+        if (quickswapPool.token0() == address(asset)) {
+            (, totalShort) = gammaVault.getTotalAmounts();
+        } else {
+             (totalShort, ) = gammaVault.getTotalAmounts();           
+        }
+
+        (uint256 lpTokens, ) = farmMasterChef.userInfo(pid, address(this)); // number of LP Tokens user has in farm 
+        uint256 shortInLp = totalShort * (lpTokens + gammaVault.balanceOf(address(this))) / gammaVault.totalSupply();
+        return balanceDebtInShort() * basisPrecision / shortInLp;
+    }
+
+    // collateral ratio - used to trigger rebalancing of collateral
+    function calcCollateralRatio() public view returns (uint256) {
+        return (balanceDebtInShort() * getOraclePrice() / 1e18) * basisPrecision / balanceLend();
     }
 
     /**
@@ -110,7 +348,142 @@ contract Strategy is BaseStrategy {
         //      }
         //      _totalAssets = aToken.balanceOf(address(this)) + asset.balanceOf(address(this));
         //
-        _totalAssets = asset.balanceOf(address(this));
+
+        // CLAIM & SELL REWARDS 
+        farmMasterChef.harvest(pid, address(this));
+        if (farmToken.balanceOf(address(this)) > 0) {
+            router.swapExactTokensForTokens(farmToken.balanceOf(address(this)), 0, _getTokenOutPath(address(farmToken), address(asset)), address(this), block.timestamp);
+        }
+        _totalAssets = asset.balanceOf(address(this)) + balanceDeployed();
+    }
+
+    function _getTokenOutPath(address tokenIn, address tokenOut)
+        internal
+        view
+        returns (address[] memory _path)
+    {
+        bool isWeth = tokenIn == address(weth) || tokenOut == address(weth);
+        _path = new address[](isWeth ? 2 : 3);
+        _path[0] = tokenIn;
+        if (isWeth) {
+            _path[1] = tokenOut;
+        } else {
+            _path[1] = address(weth);
+            _path[2] = tokenOut;
+        }
+    }
+
+    function _repayDebt() internal {
+        uint256 _bal = short.balanceOf(address(this));
+        if (_bal == 0) return;
+
+        uint256 _debt = balanceDebtInShort();
+        if (_bal < _debt) {
+            pool.repay(address(short), _bal, 2, address(this));
+        } else {
+            pool.repay(address(short), _debt, 2, address(this));
+        }
+    }
+
+    function _redeemWant(uint256 _redeem_amount) internal {
+        pool.withdraw(address(asset), _redeem_amount, address(this));
+    }
+
+
+    function _swapExactWantShort(uint256 _amount)
+        internal
+        returns (uint256 slippageWant)
+    {
+        uint256 amountOut = _convertWantToShortLP(_amount);
+        //v3Router.exactInputSingle();
+        /*
+        uint256[] memory amounts =
+            router.swapExactTokensForTokens(
+                _amount,
+                amountOut*(slippageAdj)/(basisPrecision),
+                getTokenOutPath(address(want), address(short)), // _pathWantToShort(),
+                address(this),
+                now
+            );
+        slippageWant = _convertShortToWantLP(
+            amountOut - (amounts[amounts.length - 1])
+        );
+        */
+    }
+
+    /**
+     * @notice
+     *  Swaps _amount of short for want
+     *
+     * @param _amountShort The amount of short to swap
+     *
+     * @return _amountWant Returns the want amount minus fees
+     * @return _slippageWant Returns the cost of fees + slippage in want
+     */
+    function _swapExactShortWant(uint256 _amountShort)
+        internal
+        returns (uint256 _amountWant, uint256 _slippageWant)
+    {
+        _amountWant = _convertShortToWantLP(_amountShort);
+        //v3Router.exactInputSingle();
+        /*
+        uint256[] memory amounts =
+            router.swapExactTokensForTokens(
+                _amountShort,
+                _amountWant*(slippageAdj)/(basisPrecision),
+                getTokenOutPath(address(short), address(want)),
+                address(this),
+                now
+            );
+        _slippageWant = _amountWant - (amounts[amounts.length - 1]);
+        */
+    }
+
+    function _swapWantShortExact(uint256 _amountOut)
+        internal
+        returns (uint256 _slippageWant)
+    {
+        uint256 amountInWant = _convertShortToWantLP(_amountOut);
+        uint256 amountInMax = (amountInWant*(basisPrecision)/(slippageAdj)) + (10); // add 1 to make up for rounding down
+        //v3Router.exactOutputSingle();
+
+        /*
+        uint256[] memory amounts =
+            router.swapTokensForExactTokens(
+                _amountOut,
+                amountInMax,
+                getTokenOutPath(address(want), address(short)),
+                address(this),
+                now
+            );
+        _slippageWant = amounts[0] - (amountInWant);
+        */
+    }
+
+
+    function _convertShortToWantLP(uint256 _amountShort)
+        internal
+        view
+        returns (uint256)
+    {
+        return _amountShort * getLpPrice() / 1e18;
+
+    }
+
+    function _convertShortToWantOracle(uint256 _amountShort)
+        internal
+        view
+        returns (uint256)
+    {
+        return _amountShort * getOraclePrice() / 1e18;
+    }
+
+    function _convertWantToShortLP(uint256 _amountWant)
+        internal
+        view
+        returns (uint256)
+    {
+        return _amountWant * 1e18 / getLpPrice();
     }
 
     /*//////////////////////////////////////////////////////////////
