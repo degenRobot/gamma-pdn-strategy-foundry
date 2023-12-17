@@ -48,8 +48,8 @@ contract Setup is ExtendedTest, IEvents {
     function setUp() public virtual {
         _setTokenAddrs();
 
-        // Set asset
-        asset = ERC20(tokenAddrs["DAI"]);
+        // Set asset (USDC)
+        asset = ERC20(0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174);
 
         // Set decimals
         decimals = asset.decimals();

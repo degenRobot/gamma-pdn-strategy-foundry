@@ -19,6 +19,22 @@ contract OperationTest is Setup {
         // TODO: add additional check on strat params
     }
 
+    function test_deposit(uint256 _amount) public {
+        vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
+
+        // Log oracle price from strategy
+        console.log("Oracle price", strategy.getOraclePrice());
+        console.log("LP price", strategy.getLpPrice());
+        // Deposit into strategy
+        mintAndDepositIntoStrategy(strategy, user, _amount);
+
+        console.log("Balance Deployed : ", strategy.balanceDeployed());            
+
+        // TODO: Implement logic so totalDebt is _amount and totalIdle = 0.
+        assertEq(strategy.totalAssets(), _amount, "!totalAssets");
+        
+    }
+
     function test_operation(uint256 _amount) public {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
 

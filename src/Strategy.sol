@@ -18,6 +18,7 @@ import {IMasterchef} from "./interfaces/quickswap/IMasterchef.sol";
 import {IAlgebraPool} from "./interfaces/quickswap/IAlgebraPool.sol";
 import {IUniswapV2Router01} from "./interfaces/quickswap/IUniswap.sol";
 import {IRouter} from "./interfaces/quickswap/IRouter.sol";
+import {IPoolAddressesProvider} from "./interfaces/aave/IPoolAddressesProvider.sol";
 
 /**
  * The `TokenizedStrategy` variable can be used to retrieve the strategies
@@ -38,7 +39,32 @@ contract Strategy is BaseStrategy {
     constructor(
         address _asset,
         string memory _name
-    ) BaseStrategy(_asset, _name) {}
+    ) BaseStrategy(_asset, _name) {
+        weth = 0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619;
+        short = IERC20(0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619);
+        wantDecimals = 6;
+        shortDecimals = 18;
+        router = IUniswapV2Router01(0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff);
+        farmToken = IERC20(0xf28164A485B0B2C90639E47b0f377b4a438a16B1);
+        IPoolAddressesProvider provider = IPoolAddressesProvider(0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb);
+        pool = IPool(0x794a61358D6845594F94dc1DB02A252b5b4814aD);
+        oracle = IAaveOracle(provider.getPriceOracle());
+        aToken = IAToken(0x625E7708f30cA75bfd92586e17077590C60eb4cD);
+        debtToken = IVariableDebtToken(0x0c84331e39d6658Cd6e6b9ba04736cC4c4734351);  
+
+        v3Router = IRouter(0xf5b509bB0909a69B1c207E495f687a596C168E12);
+        gammaVault = IGammaVault(0x3Cc20A6795c4b57d9817399F68E83e71C8626580);
+        depositPoint = IGammaVault(0xA42d55074869491D60Ac05490376B74cF19B00e6);
+        farmMasterChef = IMasterchef(0x20ec0d06F447d550fC6edee42121bc8C1817b97D);
+        quickswapPool = IAlgebraPool(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);  
+
+        asset.safeApprove(address(pool), type(uint256).max);        
+        asset.safeApprove(address(depositPoint), type(uint256).max);        
+        ERC20(address(short)).safeApprove(address(pool), type(uint256).max);   
+        ERC20(address(short)).safeApprove(address(depositPoint), type(uint256).max);   
+        ERC20(address(gammaVault)).safeApprove(address(farmMasterChef), type(uint256).max);     
+        
+    }
 
     uint256 public collatUpper = 6700;
     uint256 public collatTarget = 6000;
@@ -74,6 +100,7 @@ contract Strategy is BaseStrategy {
     IVariableDebtToken public debtToken;
     IAaveOracle public oracle;
     IGammaVault public gammaVault;
+    IGammaVault public depositPoint;
     IMasterchef public farmMasterChef;
     IAlgebraPool public quickswapPool;
 
@@ -94,12 +121,12 @@ contract Strategy is BaseStrategy {
      */
     function _deployFunds(uint256 _amount) internal override {
         uint256 oPrice = getOraclePrice();
-        uint256 borrow = (collatTarget * _amount / basisPrecision) * 1e18 / oPrice;
-        uint256 debtAllocation = borrow * oPrice / 1e18;
-        uint256 lendNeeded = _amount - (debtAllocation);
-        _lendWant(lendNeeded);
-        _borrow(borrow);
-        _addToLP(borrow);
+        uint256 _lendAmt = _amount * basisPrecision / (basisPrecision + collatTarget);
+        uint256 _borrowAmt = (_lendAmt * collatTarget / basisPrecision) * 1e18 / oPrice;
+
+        _lendWant(_lendAmt);
+        _borrow(_borrowAmt);
+        //_addToLP(_borrowAmt);
 
     }
 
@@ -139,7 +166,7 @@ contract Strategy is BaseStrategy {
 
 
         // TO DO ADD TO LP Position 
-        gammaVault.deposit(_amount0, _amount1, address(this), address(this), _minAmounts);
+        depositPoint.deposit(_amount0, _amount1, address(this), address(this), _minAmounts);
     }
 
     /**
@@ -170,11 +197,11 @@ contract Strategy is BaseStrategy {
             return;
         }
 
-        uint256 balanceDeployed = balanceDeployed();
+        uint256 _balanceDeployed = balanceDeployed();
 
         // stratPercent: Percentage of the deployed capital we want to liquidate.
         uint256 stratPercent =
-            (_amount - balanceWant) * basisPrecision / balanceDeployed;
+            (_amount - balanceWant) * basisPrecision / _balanceDeployed;
 
         if (stratPercent > 9500) {
             // If this happened, we just undeploy the lot
@@ -236,10 +263,8 @@ contract Strategy is BaseStrategy {
 
     // calculate total value of vault assets
     function balanceDeployed() public view returns (uint256) {
-        return
-            balanceLend() + (balanceLp()) - (
-                balanceDebt()
-            );
+        return balanceLend() - balanceDebt();
+        //return balanceLend() + balanceLp() - balanceDebt();
     }
 
     function balanceLend() public view returns (uint256) {
@@ -261,7 +286,7 @@ contract Strategy is BaseStrategy {
     }
 
     function balanceDebt() public view returns (uint256) {
-        return _convertShortToWantLP(balanceDebtInShort());
+        return _convertShortToWantOracle(balanceDebtInShort());
     }
 
     function balanceDebtInShort() public view returns (uint256) {
