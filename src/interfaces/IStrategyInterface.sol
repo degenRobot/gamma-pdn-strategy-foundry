@@ -12,5 +12,5 @@ interface IStrategyInterface is IStrategy {
     function balanceLend() external view returns (uint256);
     function balanceDebt() external view returns (uint256);
     function _getMaxValues() external view returns (uint256, uint256);
-
+    function setPriceCheck(bool) external;
 }

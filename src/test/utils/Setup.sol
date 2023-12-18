@@ -7,6 +7,10 @@ import {ExtendedTest} from "./ExtendedTest.sol";
 import {Strategy, ERC20} from "../../Strategy.sol";
 import {IStrategyInterface} from "../../interfaces/IStrategyInterface.sol";
 
+import {IRouter} from "../../interfaces/quickswap/IRouter.sol";
+import {ExactInputSingleParams} from "../../interfaces/quickswap/IRouter.sol";
+
+
 // Inherit the events so they can be checked if desired.
 import {IEvents} from "@tokenized-strategy/interfaces/IEvents.sol";
 
@@ -21,13 +25,15 @@ interface IFactory {
 contract Setup is ExtendedTest, IEvents {
     // Contract instances that we will use repeatedly.
     ERC20 public asset;
+    ERC20 public short;
     ERC20 public rewardToken;
     IStrategyInterface public strategy;
-
+    IRouter public router;
     mapping(string => address) public tokenAddrs;
 
     // Addresses for different roles we will use repeatedly.
     address public user = address(10);
+    address public offsetter = address(9);
     address public keeper = address(4);
     address public management = address(1);
     address public performanceFeeRecipient = address(3);
@@ -38,7 +44,7 @@ contract Setup is ExtendedTest, IEvents {
     // Integer variables that will be used repeatedly.
     uint256 public decimals;
     uint256 public MAX_BPS = 10_000;
-    uint256 public rewardPrice = 170e12;
+    uint256 public rewardPrice = 190e12;
 
     uint256 public maxFuzzAmount = 1e11;
     uint256 public minFuzzAmount = 10_000;
@@ -51,7 +57,9 @@ contract Setup is ExtendedTest, IEvents {
 
         // Set asset (USDC)
         asset = ERC20(0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174);
+        short = ERC20(0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619);
         rewardToken = ERC20(0xf28164A485B0B2C90639E47b0f377b4a438a16B1);
+        router = IRouter(0xf5b509bB0909a69B1c207E495f687a596C168E12);
         // Set decimals
         decimals = asset.decimals();
 
@@ -125,6 +133,56 @@ contract Setup is ExtendedTest, IEvents {
     function airdrop(ERC20 _asset, address _to, uint256 _amount) public {
         uint256 balanceBefore = _asset.balanceOf(_to);
         deal(address(_asset), _to, balanceBefore + _amount);
+    }
+
+    // Offset pool price by swapping want for short through LP Pool
+    function offsetPriceAsset() public {
+        vm.prank(management);
+        // we set this to False as we are manually manipulating price 
+        strategy.setPriceCheck(false);
+
+
+        uint256 poolBalance = asset.balanceOf(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);
+        uint256 swapAmt = poolBalance / 10;
+
+        airdrop(asset, offsetter, swapAmt);
+        vm.prank(offsetter);
+        asset.approve(address(router), swapAmt);
+
+        ExactInputSingleParams memory input;
+        input.amountIn = swapAmt;
+        input.tokenIn = address(asset);
+        input.tokenOut = address(short);
+        input.recipient = offsetter;
+        input.deadline = block.timestamp;
+
+        vm.prank(offsetter);
+        router.exactInputSingle(input);
+
+    }
+
+    // Offset pool price by swapping want for short through LP Pool
+    function offsetPriceShort() public {
+        vm.prank(management);
+        // we set this to False as we are manually manipulating price 
+        strategy.setPriceCheck(false);        
+        uint256 poolBalance = short.balanceOf(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);
+        uint256 swapAmt = poolBalance / 10;
+
+        airdrop(short, offsetter, swapAmt);
+        vm.prank(offsetter);
+        short.approve(address(router), swapAmt);
+
+        ExactInputSingleParams memory input;
+        input.amountIn = swapAmt;
+        input.tokenIn = address(short);
+        input.tokenOut = address(asset);
+        input.recipient = offsetter;
+        input.deadline = block.timestamp;
+        
+
+        vm.prank(offsetter);
+        router.exactInputSingle(input);
     }
 
     function setFees(uint16 _protocolFee, uint16 _performanceFee) public {

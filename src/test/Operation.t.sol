@@ -4,6 +4,7 @@ pragma solidity ^0.8.18;
 import "forge-std/console.sol";
 import {Setup, ERC20, IStrategyInterface} from "./utils/Setup.sol";
 
+
 contract OperationTest is Setup {
     function setUp() public virtual override {
         super.setUp();
@@ -106,7 +107,7 @@ contract OperationTest is Setup {
         // Earn Interest
         skip(1 days);
 
-        uint256 toAirdrop = _amount / 100;
+        uint256 toAirdrop = _amount / 500;
         uint256 airdropAmount = rewardPrice * toAirdrop / MAX_BPS;
         airdrop(rewardToken, address(strategy), airdropAmount);
 
@@ -157,7 +158,7 @@ contract OperationTest is Setup {
         skip(1 days);
 
         // TODO: implement logic to simulate earning interest.
-        uint256 toAirdrop = _amount / 100;
+        uint256 toAirdrop = _amount / 500;
         uint256 airdropAmount = rewardPrice * toAirdrop / MAX_BPS;
         airdrop(rewardToken, address(strategy), airdropAmount);
 
@@ -240,4 +241,23 @@ contract OperationTest is Setup {
         (trigger, ) = strategy.tendTrigger();
         assertTrue(!trigger);
     }
+
+    function test_withdraw_offset_asset(uint256 _amount) public {
+        vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
+
+        mintAndDepositIntoStrategy(strategy, user, _amount);
+
+        console.log("Balance Deployed : ", strategy.balanceDeployed());            
+
+        // TODO: Implement logic so totalDebt is _amount and totalIdle = 0.
+        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
+
+        offsetPriceAsset();
+
+        vm.prank(user);
+        strategy.redeem(_amount, user, user);
+
+
+    }
+
 }

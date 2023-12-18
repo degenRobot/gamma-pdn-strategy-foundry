@@ -96,6 +96,10 @@ contract Strategy is BaseStrategy {
         ERC20(address(farmToken)).approve(address(router), type(uint256).max);
     }
 
+    function setPriceCheck(bool _doPriceCheck) public onlyManagement {
+        doPriceCheck = _doPriceCheck;
+    }
+
     uint256 public collatUpper = 6700;
     uint256 public collatTarget = 6000;
     uint256 public collatLower = 5300;
@@ -110,7 +114,7 @@ contract Strategy is BaseStrategy {
     uint256 public basisPrecision = 10000;
     uint8 public pid=4; 
 
-    bool public doPriceCheck = true;
+    bool public doPriceCheck = false;
     bool public isPaused = false;
 
     address public weth;
@@ -201,24 +205,24 @@ contract Strategy is BaseStrategy {
 
     }
 
-function _getMaxValues() public view returns(uint256 deposit0Max, uint256 deposit1Max) {
-    address clearanceAddress = 0x676644bB8ae1B48BE85b233b82E84Eb74Fa081a8;
-    bytes memory data = abi.encodeWithSelector(IClearance.positions.selector, address(gammaVault));
+    function _getMaxValues() public view returns(uint256 deposit0Max, uint256 deposit1Max) {
+        address clearanceAddress = 0x676644bB8ae1B48BE85b233b82E84Eb74Fa081a8;
+        bytes memory data = abi.encodeWithSelector(IClearance.positions.selector, address(gammaVault));
 
-    (bool success, bytes memory returnData) = clearanceAddress.staticcall(data);
-    require(success, "Call to Clearance contract failed");
+        (bool success, bytes memory returnData) = clearanceAddress.staticcall(data);
+        require(success, "Call to Clearance contract failed");
 
-    // Adjusting for tight packing of the first six boolean values
-    uint256 offsetDeposit0Max = 9 * 32; // At slot 9 
-    uint256 offsetDeposit1Max = 10 * 32; // At slot 10 
+        // Adjusting for tight packing of the first six boolean values
+        uint256 offsetDeposit0Max = 9 * 32; // At slot 9 
+        uint256 offsetDeposit1Max = 10 * 32; // At slot 10 
 
-    assembly {
-        deposit0Max := mload(add(returnData, add(offsetDeposit0Max, 32))) // add 32 for data offset
-        deposit1Max := mload(add(returnData, add(offsetDeposit1Max, 32))) // add 32 for data offset
+        assembly {
+            deposit0Max := mload(add(returnData, add(offsetDeposit0Max, 32))) // add 32 for data offset
+            deposit1Max := mload(add(returnData, add(offsetDeposit1Max, 32))) // add 32 for data offset
+        }
+
+        return (deposit0Max, deposit1Max);
     }
-
-    return (deposit0Max, deposit1Max);
-}
 
 
 
