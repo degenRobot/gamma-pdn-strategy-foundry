@@ -8,4 +8,8 @@ interface IStrategyInterface is IStrategy {
     function getOraclePrice() external view returns (uint256);
     function getLpPrice() external view returns (uint256);
     function balanceDeployed() external view returns (uint256);
+    function balanceLp() external view returns (uint256);
+    function balanceLend() external view returns (uint256);
+    function balanceDebt() external view returns (uint256);
+
 }

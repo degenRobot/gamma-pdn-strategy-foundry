@@ -21,6 +21,7 @@ interface IFactory {
 contract Setup is ExtendedTest, IEvents {
     // Contract instances that we will use repeatedly.
     ERC20 public asset;
+    ERC20 public rewardToken;
     IStrategyInterface public strategy;
 
     mapping(string => address) public tokenAddrs;
@@ -37,6 +38,7 @@ contract Setup is ExtendedTest, IEvents {
     // Integer variables that will be used repeatedly.
     uint256 public decimals;
     uint256 public MAX_BPS = 10_000;
+    uint256 public rewardPrice = 2e13;
 
     // Fuzz from $0.01 of 1e6 stable coins up to 1 trillion of a 1e18 coin
     uint256 public maxFuzzAmount = 1e30;
@@ -50,7 +52,7 @@ contract Setup is ExtendedTest, IEvents {
 
         // Set asset (USDC)
         asset = ERC20(0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174);
-
+        rewardToken = ERC20(0xf28164A485B0B2C90639E47b0f377b4a438a16B1);
         // Set decimals
         decimals = asset.decimals();
 

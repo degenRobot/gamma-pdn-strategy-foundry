@@ -58,12 +58,12 @@ contract Strategy is BaseStrategy {
         farmMasterChef = IMasterchef(0x20ec0d06F447d550fC6edee42121bc8C1817b97D);
         quickswapPool = IAlgebraPool(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);  
 
-        asset.safeApprove(address(pool), type(uint256).max);        
-        asset.safeApprove(address(depositPoint), type(uint256).max);        
-        ERC20(address(short)).safeApprove(address(pool), type(uint256).max);   
-        ERC20(address(short)).safeApprove(address(depositPoint), type(uint256).max);   
-        ERC20(address(gammaVault)).safeApprove(address(farmMasterChef), type(uint256).max);     
-        
+        asset.approve(address(pool), type(uint256).max);        
+        asset.approve(address(depositPoint), type(uint256).max);        
+        ERC20(address(short)).approve(address(pool), type(uint256).max);   
+        ERC20(address(short)).approve(address(depositPoint), type(uint256).max);   
+        ERC20(address(gammaVault)).approve(address(farmMasterChef), type(uint256).max);     
+        ERC20(address(farmToken)).approve(address(router), type(uint256).max);
     }
 
     uint256 public collatUpper = 6700;
@@ -147,12 +147,12 @@ contract Strategy is BaseStrategy {
              (totalShort, totalWant) = gammaVault.getTotalAmounts();           
         }
         uint256 balWant = asset.balanceOf(address(this));
-        uint256 _amountWant = _amountShort * totalWant / totalShort;
+        uint256 _amountWant = totalWant * _amountShort / totalShort;
         if (balWant < _amountWant) {
             _amountWant = balWant;
-        } else {
             _amountShort = balWant * totalShort / totalWant;
-        }
+        } 
+        
         uint256 _amount0;
         uint256 _amount1;
         if (quickswapPool.token0() == address(asset)) {
@@ -167,6 +167,7 @@ contract Strategy is BaseStrategy {
 
         // TO DO ADD TO LP Position 
         depositPoint.deposit(_amount0, _amount1, address(this), address(this), _minAmounts);
+        farmMasterChef.deposit(pid, gammaVault.balanceOf(address(this)), address(this));
     }
 
     /**
@@ -191,58 +192,37 @@ contract Strategy is BaseStrategy {
      * @param _amount, The amount of 'asset' to be freed.
      */
     function _freeFunds(uint256 _amount) internal override {
-        uint256 balanceWant = balanceOfWant();
+
         require(_testPriceSource(priceSourceDiffKeeper));
-        if (_amount <= balanceWant) {
-            return;
-        }
-
         uint256 _balanceDeployed = balanceDeployed();
-
         // stratPercent: Percentage of the deployed capital we want to liquidate.
-        uint256 stratPercent =
-            (_amount - balanceWant) * basisPrecision / _balanceDeployed;
-
-        if (stratPercent > 9500) {
-            // If this happened, we just undeploy the lot
-            // and it'll be redeployed during the next harvest.
-            _liquidateAllPositionsInternal();
-        } else {
-            // liquidate all to lend
-            _liquidateAllToLend();
-            // Only rebalance if more than 5% is being liquidated
-            // to save on gas
-            uint256 slippage = 0;
-            if (stratPercent > 500) {
-                // swap to ensure the debt ratio isn't negatively affected
-                uint256 shortInShort = balanceShort();
-                uint256 debtInShort = balanceDebtInShort();
-                if (debtInShort > shortInShort) {
-                    uint256 debt =
-                        _convertShortToWantLP(debtInShort - shortInShort);
-                    uint256 swapAmountWant =
-                        debt * stratPercent / basisPrecision;
-                    _redeemWant(swapAmountWant);
-                    slippage = _swapExactWantShort(swapAmountWant);
-                } else {
-                    (, slippage) = _swapExactShortWant(
-                        (shortInShort - debtInShort) * stratPercent / basisPrecision
-                    );
-                }
-            }
-            _repayDebt();
-
-            // Redeploy the strat
-            //_deployFromLend(balanceDeployed - _amount);
+        uint256 stratPercent = _amount  * basisPrecision / _balanceDeployed;
+        (uint256 lpTokens, ) = farmMasterChef.userInfo(pid, address(this));
+        uint256 _lpOut = lpTokens * stratPercent / basisPrecision;
+        if (_lpOut > 0) {
+            _withdrawLp(_lpOut);
         }
 
-    }
-
-    function _liquidateAllPositionsInternal() internal {
-
-    }
-
-    function _liquidateAllToLend() internal {
+        uint256 slippage = 0;
+        if (stratPercent > 500) {
+            // swap to make up the difference in short 
+            uint256 shortInShort = balanceShort();
+            uint256 debtInShort = balanceDebtInShort();
+            if (debtInShort > shortInShort) {
+                uint256 debt =
+                    _convertShortToWantLP(debtInShort - shortInShort);
+                uint256 swapAmountWant =
+                    debt * stratPercent / basisPrecision;
+                _redeemWant(swapAmountWant);
+                slippage = _swapExactWantShort(swapAmountWant);
+            } else {
+                (, slippage) = _swapExactShortWant((shortInShort - debtInShort) * stratPercent / basisPrecision);
+            }
+        }
+        
+        _repayDebt();
+        uint256 _redeemAmount = balanceLend() * stratPercent / basisPrecision;
+        _redeemWant(_redeemAmount);
         
     }
 
@@ -263,7 +243,8 @@ contract Strategy is BaseStrategy {
 
     // calculate total value of vault assets
     function balanceDeployed() public view returns (uint256) {
-        return balanceLend() - balanceDebt();
+        uint256 oPrice = getOraclePrice();
+        return balanceLend() - balanceDebt() + balanceLp() + (balanceShort() * oPrice / 1e18);
         //return balanceLend() + balanceLp() - balanceDebt();
     }
 
@@ -410,8 +391,27 @@ contract Strategy is BaseStrategy {
         }
     }
 
-    function _redeemWant(uint256 _redeem_amount) internal {
-        pool.withdraw(address(asset), _redeem_amount, address(this));
+    function _redeemWant(uint256 _redeemAmount) internal {
+
+        // We run this check in case some dust is left & cannot redeem full amount 
+        uint256 _bal = balanceLend();
+        uint256 _debt = balanceDebt();
+
+        uint256 _maxRedeem = _bal - _debt * basisPrecision / collatLimit;
+
+        if (_redeemAmount > _maxRedeem) {
+            _redeemAmount = _maxRedeem;
+        }
+
+        pool.withdraw(address(asset), _redeemAmount, address(this));
+    }
+
+    function _withdrawLp(uint256 _amountOut) internal {
+        farmMasterChef.withdraw(pid, _amountOut, address(this));
+        uint256[4] memory _minAmounts;
+        gammaVault.withdraw(_amountOut, address(this), address(this), _minAmounts);
+        
+        //To do -> withdraw from farm & unwind lp position
     }
 
 
