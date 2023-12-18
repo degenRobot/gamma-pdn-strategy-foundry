@@ -155,7 +155,17 @@ contract Strategy is BaseStrategy {
      */
     function _deployFunds(uint256 _amount) internal override {
         uint256 oPrice = getOraclePrice();
-        uint256 _lendAmt = _amount * basisPrecision / (basisPrecision + collatTarget);
+
+        /*
+        Due to pool having dynamic pool weights we know that the lend allocation follows the below :
+        L = (1) / (1 + c(w / (1-w)))
+        Where L = % of strat allocated as collateral & c = collateral target
+        */
+
+        uint256 poolWeightWant = getPoolWeightWant();
+        uint256 _denominator = basisPrecision + poolWeightWant * collatTarget / (basisPrecision - poolWeightWant);
+
+        uint256 _lendAmt = _amount * basisPrecision / _denominator;
         uint256 _borrowAmt = (_lendAmt * collatTarget / basisPrecision) * 1e18 / oPrice;
 
         _lendWant(_lendAmt);
@@ -177,6 +187,19 @@ contract Strategy is BaseStrategy {
 
     function _borrow(uint256 borrowAmount) internal {
         pool.borrow(address(short), borrowAmount, 2, 0, address(this));
+    }
+
+    function getPoolWeightWant() public view returns(uint256) {
+        uint256 totalWant; 
+        uint256 totalShort;
+        if (quickswapPool.token0() == address(asset)) {
+            (totalWant, totalShort) = gammaVault.getTotalAmounts();
+        } else {
+             (totalShort, totalWant) = gammaVault.getTotalAmounts();           
+        }
+        uint256 _poolWeightWant = basisPrecision * totalWant/(totalWant + _convertShortToWantOracle(totalShort));
+        return _poolWeightWant;
+
     }
 
     function _getAmountsIn(uint256 _amountShort) internal view returns (uint256 _amount0, uint256 _amount1) {

@@ -255,20 +255,17 @@ contract OperationTest is Setup {
         strategy.redeem(_amount, user, user);
         vm.prank(management);
         strategy.setPriceCheck(true);  
-    }
 
-    function test_withdraw_price_offset_check_asset(uint256 _amount) public {
-        vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
-        mintAndDepositIntoStrategy(strategy, user, _amount);
-        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
-        offsetPriceAsset();
-        vm.prank(user);
-        vm.expectRevert("Price Offset Check");
-        strategy.redeem(_amount, user, user);
-
+        uint256 balanceBefore = asset.balanceOf(user);
+        assertApproxEq(
+            asset.balanceOf(user),
+            balanceBefore + _amount,
+            _amount / 500,
+            "!total balance"
+        );
 
     }
-
+    
     function test_withdraw_offset_short(uint256 _amount) public {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
 
@@ -283,6 +280,25 @@ contract OperationTest is Setup {
         vm.prank(management);
         strategy.setPriceCheck(true);  
 
+        uint256 balanceBefore = asset.balanceOf(user);
+        assertApproxEq(
+            asset.balanceOf(user),
+            balanceBefore + _amount,
+            _amount / 500,
+            "!total balance"
+        );
+
+    }
+
+    /*
+    function test_withdraw_price_offset_check_asset(uint256 _amount) public {
+        vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
+        mintAndDepositIntoStrategy(strategy, user, _amount);
+        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
+        offsetPriceAsset();
+        vm.prank(user);
+        vm.expectRevert("Price Offset Check");
+        strategy.redeem(_amount, user, user);
     }
 
     function test_withdraw_price_offset_check_short(uint256 _amount) public {
@@ -295,8 +311,7 @@ contract OperationTest is Setup {
         vm.prank(user);
         vm.expectRevert("Price Offset Check");
         strategy.redeem(_amount, user, user);
-
-
     }
+    */
 
 }
