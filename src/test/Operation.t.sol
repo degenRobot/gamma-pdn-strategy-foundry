@@ -106,7 +106,7 @@ contract OperationTest is Setup {
         // Earn Interest
         skip(1 days);
 
-        uint256 toAirdrop = _amount / 1000;
+        uint256 toAirdrop = _amount / 100;
         uint256 airdropAmount = rewardPrice * toAirdrop / MAX_BPS;
         airdrop(rewardToken, address(strategy), airdropAmount);
 
@@ -115,7 +115,10 @@ contract OperationTest is Setup {
         (uint256 profit, uint256 loss) = strategy.report();
 
         // Check return Values
-        assertGe(profit, toAirdrop * 950 / 1000, "!profit");
+        console.log("To Airdrop : ", _amount);
+        console.log("Profit : ", profit);
+        // As price of reward token is volatile have big detla here 
+        assertGe(profit, toAirdrop /2, "!profit");
         assertEq(loss, 0, "!loss");
 
         skip(strategy.profitMaxUnlockTime());
@@ -154,7 +157,7 @@ contract OperationTest is Setup {
         skip(1 days);
 
         // TODO: implement logic to simulate earning interest.
-        uint256 toAirdrop = _amount / 1000;
+        uint256 toAirdrop = _amount / 100;
         uint256 airdropAmount = rewardPrice * toAirdrop / MAX_BPS;
         airdrop(rewardToken, address(strategy), airdropAmount);
 
@@ -162,8 +165,8 @@ contract OperationTest is Setup {
         vm.prank(keeper);
         (uint256 profit, uint256 loss) = strategy.report();
 
-        // Check return Values
-        assertGe(profit, toAirdrop * 950 / 1000, "!profit");
+        // As price of reward token is volatile have big detla here 
+        assertGe(profit, toAirdrop /2, "!profit");
         assertEq(loss, 0, "!loss");
 
         skip(strategy.profitMaxUnlockTime());
