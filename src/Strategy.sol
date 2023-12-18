@@ -182,6 +182,27 @@ contract Strategy is BaseStrategy {
         pool.borrow(address(short), borrowAmount, 2, 0, address(this));
     }
 
+    function rebalanceCollateral() external onlyKeepers {
+        uint256 collatRatio = calcCollateralRatio();
+        if (collatRatio > collatUpper) {
+            uint256 _percentAdj = (collatRatio - collatTarget) * basisPrecision / collatRatio;
+            _withdrawLp(_percentAdj);
+            _repayDebt();
+            uint256 _amountFree = asset.balanceOf(address(this));
+            _lendWant(_amountFree);
+
+            // TO DO handle edge cases where pool weights are out of whack & we need to do a swap 
+
+        } else if (collatRatio < collatLower) {
+            uint256 _collatAtTarget = balanceDebt() * basisPrecision / collatTarget; 
+            uint256 _redeemAmt = balanceLend() - _collatAtTarget;
+            _redeemWant(_redeemAmt);
+            uint256 _amountFree = asset.balanceOf(address(this));
+            _deployFunds(_amountFree);
+        }
+
+    }
+
     function getPoolWeightWant() public view returns(uint256) {
         uint256 totalWant; 
         uint256 totalShort;

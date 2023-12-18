@@ -161,7 +161,7 @@ contract Setup is ExtendedTest, IEvents {
     function offsetPriceShort() public {
      
         uint256 poolBalance = short.balanceOf(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);
-        uint256 swapAmt = poolBalance / 250;
+        uint256 swapAmt = poolBalance / 40;
 
         airdrop(short, offsetter, swapAmt);
         vm.prank(offsetter);
