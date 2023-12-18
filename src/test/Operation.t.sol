@@ -246,11 +246,14 @@ contract OperationTest is Setup {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
         mintAndDepositIntoStrategy(strategy, user, _amount);
 
-        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
-        offsetPriceAsset();
-
         vm.prank(management);
         strategy.setPriceCheck(false);   
+
+        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
+        console.log("Total Assets Pre Offset : ", strategy.totalAssets());
+        offsetPriceAsset();
+        console.log("Total Assets Post Offset : ", strategy.totalAssets());
+
         vm.prank(user);
         strategy.redeem(_amount, user, user);
         vm.prank(management);
@@ -271,9 +274,14 @@ contract OperationTest is Setup {
 
         mintAndDepositIntoStrategy(strategy, user, _amount);
         assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
-        offsetPriceShort();
+
         vm.prank(management);
         strategy.setPriceCheck(false);   
+
+        console.log("Total Assets Pre Offset : ", strategy.totalAssets());
+        offsetPriceShort();
+        console.log("Total Assets Post Offset : ", strategy.totalAssets());
+
         vm.prank(user);
         strategy.redeem(_amount, user, user);
 

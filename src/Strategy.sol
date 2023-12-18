@@ -22,6 +22,7 @@ import {IAlgebraPool} from "./interfaces/quickswap/IAlgebraPool.sol";
 import {IUniswapV2Router01} from "./interfaces/quickswap/IUniswap.sol";
 import {IRouter} from "./interfaces/quickswap/IRouter.sol";
 import {IPoolAddressesProvider} from "./interfaces/aave/IPoolAddressesProvider.sol";
+import {ExactInputSingleParams} from "./interfaces/quickswap/IRouter.sol";
 
 /**
  * The `TokenizedStrategy` variable can be used to retrieve the strategies
@@ -39,22 +40,7 @@ import {IPoolAddressesProvider} from "./interfaces/aave/IPoolAddressesProvider.s
 contract Strategy is BaseStrategy {
     using SafeERC20 for ERC20;
 
-    struct Position {
-        bool zeroDeposit;
-        bool customRatio;
-        bool customTwap;
-        bool ratioRemoved;
-        bool depositOverride; // force custom deposit constraints
-        bool twapOverride; // force twap check for hypervisor instance
-        uint8 version; 
-        uint32 twapInterval; // override global twap
-        uint256 priceThreshold; // custom price threshold
-        uint256 deposit0Max;
-        uint256 deposit1Max;
-        uint256 maxTotalSupply;
-        uint256 fauxTotal0;
-        uint256 fauxTotal1;
-    }
+
 
     constructor(
         address _asset,
@@ -94,6 +80,10 @@ contract Strategy is BaseStrategy {
         farmMasterChef = IMasterchef(0x20ec0d06F447d550fC6edee42121bc8C1817b97D);
         ERC20(address(gammaVault)).approve(address(farmMasterChef), type(uint256).max);     
         ERC20(address(farmToken)).approve(address(router), type(uint256).max);
+        asset.approve(address(v3Router), type(uint256).max);        
+        ERC20(address(short)).approve(address(v3Router), type(uint256).max);   
+
+
     }
 
     function setPriceCheck(bool _doPriceCheck) public onlyManagement {
@@ -105,6 +95,9 @@ contract Strategy is BaseStrategy {
     uint256 public collatLower = 5300;
     uint256 public debtUpper = 10190;
     uint256 public debtLower = 9810;
+
+    // Min Amount to complete swaps 
+    uint256 public dustAmt = 10000;
 
     // protocal limits & upper, target and lower thresholds for ratio of debt to collateral
     uint256 public collatLimit = 7500;
@@ -312,24 +305,24 @@ contract Strategy is BaseStrategy {
         uint256 _balanceDeployed = balanceDeployed();
         // stratPercent: Percentage of the deployed capital we want to liquidate.
         uint256 stratPercent = _amount  * basisPrecision / _balanceDeployed;
-        (uint256 lpTokens, ) = farmMasterChef.userInfo(pid, address(this));
-        uint256 _lpOut = lpTokens * stratPercent / basisPrecision;
         _withdrawLp(stratPercent);
 
         uint256 slippage = 0;
         if (stratPercent > 500) {
             // swap to make up the difference in short 
             uint256 shortInShort = balanceShort();
-            uint256 debtInShort = balanceDebtInShort();
+            uint256 debtInShort = balanceDebtInShort() * stratPercent / basisPrecision;
             if (debtInShort > shortInShort) {
-                uint256 debt =
-                    _convertShortToWantLP(debtInShort - shortInShort);
-                uint256 swapAmountWant =
-                    debt * stratPercent / basisPrecision;
+                uint256 swapAmountWant =_convertShortToWantLP(debtInShort - shortInShort);
                 _redeemWant(swapAmountWant);
-                slippage = _swapExactWantShort(swapAmountWant);
+                if (swapAmountWant > dustAmt){
+                    slippage = _swapExactWantShort(swapAmountWant);
+                }
             } else {
-                (, slippage) = _swapExactShortWant((shortInShort - debtInShort) * stratPercent / basisPrecision);
+                uint256 _swapAmtShort = shortInShort - debtInShort;
+                if (_convertShortToWantLP(_swapAmtShort) > dustAmt) {
+                    (, slippage) = _swapExactShortWant(shortInShort - (debtInShort* stratPercent / basisPrecision) );
+                }
             }
         }
         
@@ -539,20 +532,16 @@ contract Strategy is BaseStrategy {
         returns (uint256 slippageWant)
     {
         uint256 amountOut = _convertWantToShortLP(_amount);
-        //v3Router.exactInputSingle();
-        /*
-        uint256[] memory amounts =
-            router.swapExactTokensForTokens(
-                _amount,
-                amountOut*(slippageAdj)/(basisPrecision),
-                getTokenOutPath(address(want), address(short)), // _pathWantToShort(),
-                address(this),
-                now
-            );
-        slippageWant = _convertShortToWantLP(
-            amountOut - (amounts[amounts.length - 1])
-        );
-        */
+
+        ExactInputSingleParams memory input;
+
+        input.amountIn = _amount;
+        input.tokenIn = address(asset);
+        input.tokenOut = address(short);
+        input.recipient = address(this);
+        input.deadline = block.timestamp;
+        input.amountOutMinimum = amountOut*(slippageAdj)/(basisPrecision);
+        v3Router.exactInputSingle(input);
     }
 
     /**
@@ -569,18 +558,16 @@ contract Strategy is BaseStrategy {
         returns (uint256 _amountWant, uint256 _slippageWant)
     {
         _amountWant = _convertShortToWantLP(_amountShort);
-        //v3Router.exactInputSingle();
-        /*
-        uint256[] memory amounts =
-            router.swapExactTokensForTokens(
-                _amountShort,
-                _amountWant*(slippageAdj)/(basisPrecision),
-                getTokenOutPath(address(short), address(want)),
-                address(this),
-                now
-            );
-        _slippageWant = _amountWant - (amounts[amounts.length - 1]);
-        */
+        ExactInputSingleParams memory input;
+
+        input.amountIn = _amountShort;
+        input.amountOutMinimum = _amountWant*(slippageAdj)/(basisPrecision);
+        input.tokenIn = address(short);
+        input.tokenOut = address(asset);
+        input.recipient = address(this);
+        input.deadline = block.timestamp;
+        v3Router.exactInputSingle(input);
+
     }
 
     function _swapWantShortExact(uint256 _amountOut)

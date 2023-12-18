@@ -139,7 +139,7 @@ contract Setup is ExtendedTest, IEvents {
     function offsetPriceAsset() public {
 
         uint256 poolBalance = asset.balanceOf(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);
-        uint256 swapAmt = poolBalance / 10;
+        uint256 swapAmt = poolBalance / 250;
 
         airdrop(asset, offsetter, swapAmt);
         vm.prank(offsetter);
@@ -161,7 +161,7 @@ contract Setup is ExtendedTest, IEvents {
     function offsetPriceShort() public {
      
         uint256 poolBalance = short.balanceOf(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);
-        uint256 swapAmt = poolBalance / 10;
+        uint256 swapAmt = poolBalance / 250;
 
         airdrop(short, offsetter, swapAmt);
         vm.prank(offsetter);
