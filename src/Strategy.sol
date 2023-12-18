@@ -14,6 +14,9 @@ import {IVariableDebtToken} from "./interfaces/aave/IVariableDebtToken.sol";
 import {IPool} from "./interfaces/aave/IPool.sol";
 import {IAaveOracle} from "./interfaces/aave/IAaveOracle.sol";
 import {IGammaVault} from "./interfaces/gamma/IGammaVault.sol";
+import {IClearance} from "./interfaces/gamma/IClearance.sol";
+
+import {IUniProxy} from "./interfaces/gamma/IUniProxy.sol";
 import {IMasterchef} from "./interfaces/quickswap/IMasterchef.sol";
 import {IAlgebraPool} from "./interfaces/quickswap/IAlgebraPool.sol";
 import {IUniswapV2Router01} from "./interfaces/quickswap/IUniswap.sol";
@@ -36,6 +39,23 @@ import {IPoolAddressesProvider} from "./interfaces/aave/IPoolAddressesProvider.s
 contract Strategy is BaseStrategy {
     using SafeERC20 for ERC20;
 
+    struct Position {
+        bool zeroDeposit;
+        bool customRatio;
+        bool customTwap;
+        bool ratioRemoved;
+        bool depositOverride; // force custom deposit constraints
+        bool twapOverride; // force twap check for hypervisor instance
+        uint8 version; 
+        uint32 twapInterval; // override global twap
+        uint256 priceThreshold; // custom price threshold
+        uint256 deposit0Max;
+        uint256 deposit1Max;
+        uint256 maxTotalSupply;
+        uint256 fauxTotal0;
+        uint256 fauxTotal1;
+    }
+
     constructor(
         address _asset,
         string memory _name
@@ -44,6 +64,12 @@ contract Strategy is BaseStrategy {
         short = IERC20(0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619);
         wantDecimals = 6;
         shortDecimals = 18;
+        _setInterfaces();
+        _approveContracts();
+
+    }
+
+    function _setInterfaces() internal {
         router = IUniswapV2Router01(0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff);
         farmToken = IERC20(0xf28164A485B0B2C90639E47b0f377b4a438a16B1);
         IPoolAddressesProvider provider = IPoolAddressesProvider(0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb);
@@ -54,14 +80,18 @@ contract Strategy is BaseStrategy {
 
         v3Router = IRouter(0xf5b509bB0909a69B1c207E495f687a596C168E12);
         gammaVault = IGammaVault(0x3Cc20A6795c4b57d9817399F68E83e71C8626580);
-        depositPoint = IGammaVault(0xA42d55074869491D60Ac05490376B74cF19B00e6);
-        farmMasterChef = IMasterchef(0x20ec0d06F447d550fC6edee42121bc8C1817b97D);
+        depositPoint = IUniProxy(0xA42d55074869491D60Ac05490376B74cF19B00e6);
         quickswapPool = IAlgebraPool(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);  
+        clearance = IClearance(0x676644bB8ae1B48BE85b233b82E84Eb74Fa081a8);
 
+    }
+
+    function _approveContracts() internal {
         asset.approve(address(pool), type(uint256).max);        
-        asset.approve(address(depositPoint), type(uint256).max);        
+        asset.approve(address(gammaVault), type(uint256).max);        
         ERC20(address(short)).approve(address(pool), type(uint256).max);   
-        ERC20(address(short)).approve(address(depositPoint), type(uint256).max);   
+        ERC20(address(short)).approve(address(gammaVault), type(uint256).max);   
+        farmMasterChef = IMasterchef(0x20ec0d06F447d550fC6edee42121bc8C1817b97D);
         ERC20(address(gammaVault)).approve(address(farmMasterChef), type(uint256).max);     
         ERC20(address(farmToken)).approve(address(router), type(uint256).max);
     }
@@ -71,7 +101,6 @@ contract Strategy is BaseStrategy {
     uint256 public collatLower = 5300;
     uint256 public debtUpper = 10190;
     uint256 public debtLower = 9810;
-    uint256 public rebalancePercent = 10000; // 100% (how far does rebalance of debt move towards 100% from threshold)
 
     // protocal limits & upper, target and lower thresholds for ratio of debt to collateral
     uint256 public collatLimit = 7500;
@@ -79,7 +108,7 @@ contract Strategy is BaseStrategy {
 
     uint256 public slippageAdj = 9900; // 99%
     uint256 public basisPrecision = 10000;
-    uint8 public pid; 
+    uint8 public pid=4; 
 
     bool public doPriceCheck = true;
     bool public isPaused = false;
@@ -100,9 +129,10 @@ contract Strategy is BaseStrategy {
     IVariableDebtToken public debtToken;
     IAaveOracle public oracle;
     IGammaVault public gammaVault;
-    IGammaVault public depositPoint;
+    IUniProxy public depositPoint;
     IMasterchef public farmMasterChef;
     IAlgebraPool public quickswapPool;
+    IClearance public clearance;
 
     /*//////////////////////////////////////////////////////////////
                 NEEDED TO BE OVERRIDDEN BY STRATEGIST
@@ -126,7 +156,14 @@ contract Strategy is BaseStrategy {
 
         _lendWant(_lendAmt);
         _borrow(_borrowAmt);
-        //_addToLP(_borrowAmt);
+        _addToLP(_borrowAmt);
+
+        // Any excess funds after should be returned back to AAVE 
+        uint256 _excessWant = asset.balanceOf(address(this));
+        if (_excessWant > 0) {
+            _lendWant(_excessWant);
+        }
+        _repayDebt();
 
     }
 
@@ -138,7 +175,7 @@ contract Strategy is BaseStrategy {
         pool.borrow(address(short), borrowAmount, 2, 0, address(this));
     }
 
-    function _addToLP(uint256 _amountShort) internal {
+    function _getAmountsIn(uint256 _amountShort) internal view returns (uint256 _amount0, uint256 _amount1) {
         uint256 totalWant; 
         uint256 totalShort;
         if (quickswapPool.token0() == address(asset)) {
@@ -148,13 +185,12 @@ contract Strategy is BaseStrategy {
         }
         uint256 balWant = asset.balanceOf(address(this));
         uint256 _amountWant = totalWant * _amountShort / totalShort;
+        // if we don't have enough want to add to LP, need to scale back amounts we add
         if (balWant < _amountWant) {
             _amountWant = balWant;
             _amountShort = balWant * totalShort / totalWant;
         } 
-        
-        uint256 _amount0;
-        uint256 _amount1;
+
         if (quickswapPool.token0() == address(asset)) {
             _amount0 = _amountWant;
             _amount1 = _amountShort;
@@ -162,12 +198,64 @@ contract Strategy is BaseStrategy {
             _amount0 = _amountShort;           
             _amount1 = _amountWant;
         }
+
+    }
+
+function _getMaxValues() public view returns(uint256 deposit0Max, uint256 deposit1Max) {
+    address clearanceAddress = 0x676644bB8ae1B48BE85b233b82E84Eb74Fa081a8;
+    bytes memory data = abi.encodeWithSelector(IClearance.positions.selector, address(gammaVault));
+
+    (bool success, bytes memory returnData) = clearanceAddress.staticcall(data);
+    require(success, "Call to Clearance contract failed");
+
+    // Adjusting for tight packing of the first six boolean values
+    uint256 offsetDeposit0Max = 9 * 32; // At slot 9 
+    uint256 offsetDeposit1Max = 10 * 32; // At slot 10 
+
+    assembly {
+        deposit0Max := mload(add(returnData, add(offsetDeposit0Max, 32))) // add 32 for data offset
+        deposit1Max := mload(add(returnData, add(offsetDeposit1Max, 32))) // add 32 for data offset
+    }
+
+    return (deposit0Max, deposit1Max);
+}
+
+
+
+    /*
+    function _getMaxValues() public view returns(uint256 deposit0Max, uint256 deposit1Max) {
+        (,,,,,,,, deposit0Max, deposit1Max,,,,) = clearance.positions(address(gammaVault));
+    }
+    */
+
+    function _checkMaxAmts(uint256 _amount0 , uint256 _amount1) internal view returns(uint256 , uint256 ) {
+        //(,,,,,,,,, uint256 max0, uint256 max1 , , ,) = IClearance(0x676644bB8ae1B48BE85b233b82E84Eb74Fa081a8).position(address(gammaVault));
+        /*
+        Position memory pos = IClearance(0x676644bB8ae1B48BE85b233b82E84Eb74Fa081a8).position(address(gammaVault));
+        uint256 max0 = pos.deposit0Max;
+        uint256 max1 = pos.deposit1Max;
+        */
+        (uint256 max0, uint256 max1) = _getMaxValues();
+
+        if (_amount0 > max0) {
+            _amount1 = max0 * _amount1 / _amount0;
+            _amount0 = max0;
+        }
+        if (_amount1 > max1) {
+            _amount0 = max1 * _amount0 / _amount1;
+            _amount1 = max1;
+        }
+        return(_amount0, _amount1);
+    }
+
+    function _addToLP(uint256 _amountShort) internal {
+        (uint256 _amount0, uint256 _amount1) = _getAmountsIn(_amountShort);
         uint256[4] memory _minAmounts;
-
-
-        // TO DO ADD TO LP Position 
-        depositPoint.deposit(_amount0, _amount1, address(this), address(this), _minAmounts);
-        farmMasterChef.deposit(pid, gammaVault.balanceOf(address(this)), address(this));
+        // Check Max deposit amounts 
+        (_amount0, _amount1) = _checkMaxAmts(_amount0, _amount1);
+        // Deposit into Gamma Vault & Farm 
+        depositPoint.deposit(_amount0, _amount1, address(this), address(gammaVault), _minAmounts);
+        //farmMasterChef.deposit(pid, gammaVault.balanceOf(address(this)), address(this));
     }
 
     /**
@@ -320,6 +408,15 @@ contract Strategy is BaseStrategy {
         return (balanceDebtInShort() * getOraclePrice() / 1e18) * basisPrecision / balanceLend();
     }
 
+
+    function _claimAndSellRewards() internal {
+        // CLAIM & SELL REWARDS 
+        farmMasterChef.harvest(pid, address(this));
+        if (farmToken.balanceOf(address(this)) > 0) {
+            router.swapExactTokensForTokens(farmToken.balanceOf(address(this)), 0, _getTokenOutPath(address(farmToken), address(asset)), address(this), block.timestamp);
+        }
+    }
+
     /**
      * @dev Internal function to harvest all rewards, redeploy any idle
      * funds and return an accurate accounting of all funds currently
@@ -347,20 +444,11 @@ contract Strategy is BaseStrategy {
         override
         returns (uint256 _totalAssets)
     {
-        // TODO: Implement harvesting logic and accurate accounting EX:
-        //
-        //      if(!TokenizedStrategy.isShutdown()) {
-        //          _claimAndSellRewards();
-        //      }
-        //      _totalAssets = aToken.balanceOf(address(this)) + asset.balanceOf(address(this));
-        //
-
-        // CLAIM & SELL REWARDS 
-        farmMasterChef.harvest(pid, address(this));
-        if (farmToken.balanceOf(address(this)) > 0) {
-            router.swapExactTokensForTokens(farmToken.balanceOf(address(this)), 0, _getTokenOutPath(address(farmToken), address(asset)), address(this), block.timestamp);
+        
+        if(!TokenizedStrategy.isShutdown()) {
+            _claimAndSellRewards();
         }
-        _totalAssets = asset.balanceOf(address(this)) + balanceDeployed();
+        _totalAssets = balanceDeployed() + asset.balanceOf(address(this));
     }
 
     function _getTokenOutPath(address tokenIn, address tokenOut)
@@ -397,12 +485,13 @@ contract Strategy is BaseStrategy {
         uint256 _bal = balanceLend();
         uint256 _debt = balanceDebt();
 
-        uint256 _maxRedeem = _bal - _debt * basisPrecision / collatLimit;
+        uint256 _maxRedeem = _bal - (_debt * basisPrecision / collatLimit);
 
         if (_redeemAmount > _maxRedeem) {
             _redeemAmount = _maxRedeem;
         }
 
+        if (_redeemAmount == 0) return;
         pool.withdraw(address(asset), _redeemAmount, address(this));
     }
 
@@ -410,8 +499,6 @@ contract Strategy is BaseStrategy {
         farmMasterChef.withdraw(pid, _amountOut, address(this));
         uint256[4] memory _minAmounts;
         gammaVault.withdraw(_amountOut, address(this), address(this), _minAmounts);
-        
-        //To do -> withdraw from farm & unwind lp position
     }
 
 

@@ -9,7 +9,7 @@ size  :; forge build --sizes
 inspect :; forge inspect ${contract} storage-layout --pretty
 
 #FORK_URL := ${MATIC_RPC_URL} 
-FORK_URL := https://rpc.ankr.com/polygon
+FORK_URL := https://polygon.llamarpc.com
 test = test_operation
 
 # local tests without fork
