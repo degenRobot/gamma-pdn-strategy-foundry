@@ -137,10 +137,6 @@ contract Setup is ExtendedTest, IEvents {
 
     // Offset pool price by swapping want for short through LP Pool
     function offsetPriceAsset() public {
-        vm.prank(management);
-        // we set this to False as we are manually manipulating price 
-        strategy.setPriceCheck(false);
-
 
         uint256 poolBalance = asset.balanceOf(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);
         uint256 swapAmt = poolBalance / 10;
@@ -163,9 +159,7 @@ contract Setup is ExtendedTest, IEvents {
 
     // Offset pool price by swapping want for short through LP Pool
     function offsetPriceShort() public {
-        vm.prank(management);
-        // we set this to False as we are manually manipulating price 
-        strategy.setPriceCheck(false);        
+     
         uint256 poolBalance = short.balanceOf(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);
         uint256 swapAmt = poolBalance / 10;
 

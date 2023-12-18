@@ -244,17 +244,56 @@ contract OperationTest is Setup {
 
     function test_withdraw_offset_asset(uint256 _amount) public {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
-
         mintAndDepositIntoStrategy(strategy, user, _amount);
 
-        console.log("Balance Deployed : ", strategy.balanceDeployed());            
-
-        // TODO: Implement logic so totalDebt is _amount and totalIdle = 0.
         assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
-
         offsetPriceAsset();
 
+        vm.prank(management);
+        strategy.setPriceCheck(false);   
         vm.prank(user);
+        strategy.redeem(_amount, user, user);
+        vm.prank(management);
+        strategy.setPriceCheck(true);  
+    }
+
+    function test_withdraw_price_offset_check_asset(uint256 _amount) public {
+        vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
+        mintAndDepositIntoStrategy(strategy, user, _amount);
+        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
+        offsetPriceAsset();
+        vm.prank(user);
+        vm.expectRevert("Price Offset Check");
+        strategy.redeem(_amount, user, user);
+
+
+    }
+
+    function test_withdraw_offset_short(uint256 _amount) public {
+        vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
+
+        mintAndDepositIntoStrategy(strategy, user, _amount);
+        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
+        offsetPriceShort();
+        vm.prank(management);
+        strategy.setPriceCheck(false);   
+        vm.prank(user);
+        strategy.redeem(_amount, user, user);
+
+        vm.prank(management);
+        strategy.setPriceCheck(true);  
+
+    }
+
+    function test_withdraw_price_offset_check_short(uint256 _amount) public {
+        vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
+
+        mintAndDepositIntoStrategy(strategy, user, _amount);
+        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
+        offsetPriceShort();
+
+        vm.prank(user);
+        vm.expectRevert("Price Offset Check");
         strategy.redeem(_amount, user, user);
 
 
