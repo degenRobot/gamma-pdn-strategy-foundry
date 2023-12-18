@@ -255,7 +255,7 @@ function _getMaxValues() public view returns(uint256 deposit0Max, uint256 deposi
         (_amount0, _amount1) = _checkMaxAmts(_amount0, _amount1);
         // Deposit into Gamma Vault & Farm 
         depositPoint.deposit(_amount0, _amount1, address(this), address(gammaVault), _minAmounts);
-        //farmMasterChef.deposit(pid, gammaVault.balanceOf(address(this)), address(this));
+        farmMasterChef.deposit(pid, gammaVault.balanceOf(address(this)), address(this));
     }
 
     /**
@@ -287,9 +287,7 @@ function _getMaxValues() public view returns(uint256 deposit0Max, uint256 deposi
         uint256 stratPercent = _amount  * basisPrecision / _balanceDeployed;
         (uint256 lpTokens, ) = farmMasterChef.userInfo(pid, address(this));
         uint256 _lpOut = lpTokens * stratPercent / basisPrecision;
-        if (_lpOut > 0) {
-            _withdrawLp(_lpOut);
-        }
+        _withdrawLp(stratPercent);
 
         uint256 slippage = 0;
         if (stratPercent > 500) {
@@ -495,10 +493,17 @@ function _getMaxValues() public view returns(uint256 deposit0Max, uint256 deposi
         pool.withdraw(address(asset), _redeemAmount, address(this));
     }
 
-    function _withdrawLp(uint256 _amountOut) internal {
-        farmMasterChef.withdraw(pid, _amountOut, address(this));
+    function _withdrawLp(uint256 _stratPercent) internal {
+        (uint256 _farmBalance, ) = farmMasterChef.userInfo(pid, address(this));        
+        uint256 _lpTokens = gammaVault.balanceOf(address(this));
+
+        uint256 _lpOut = (_lpTokens + _farmBalance) * _stratPercent / basisPrecision;
+        if (_farmBalance > 0) {
+            farmMasterChef.withdraw(pid, _lpOut, address(this));
+        }
+
         uint256[4] memory _minAmounts;
-        gammaVault.withdraw(_amountOut, address(this), address(this), _minAmounts);
+        gammaVault.withdraw(_lpOut, address(this), address(this), _minAmounts);
     }
 
 

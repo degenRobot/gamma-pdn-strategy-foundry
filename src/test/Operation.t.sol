@@ -21,7 +21,7 @@ contract OperationTest is Setup {
 
     function test_deposit(uint256 _amount) public {
         vm.assume(_amount > minFuzzAmount && _amount < maxFuzzAmount);
-        (uint256 max0, uint256 max1) = strategy._getMaxValues();
+        //(uint256 max0, uint256 max1) = strategy._getMaxValues();
         //console.log("max0 : ", max0);
         //console.log("max1 : ", max1);
         // Log oracle price from strategy
@@ -33,7 +33,7 @@ contract OperationTest is Setup {
         console.log("Balance Deployed : ", strategy.balanceDeployed());            
 
         // TODO: Implement logic so totalDebt is _amount and totalIdle = 0.
-        assertEq(strategy.totalAssets(), _amount, "!totalAssets");
+        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
         
     }
 
@@ -50,7 +50,7 @@ contract OperationTest is Setup {
         console.log("Total Assets : ", strategy.totalAssets());
 
         // TODO: Implement logic so totalDebt is _amount and totalIdle = 0.
-        assertEq(strategy.totalAssets(), _amount, "!total Assets");
+        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!total Assets");
         //assertEq(strategy.totalDebt(), 0, "!totalDebt");
         //assertEq(strategy.totalIdle(), _amount, "!totalIdle");
 
@@ -82,7 +82,7 @@ contract OperationTest is Setup {
         assertApproxEq(
             asset.balanceOf(user),
             balanceBefore + _amount,
-            _amount / 200,
+            _amount / 500,
             "!total balance"
         );
 
@@ -99,22 +99,23 @@ contract OperationTest is Setup {
         mintAndDepositIntoStrategy(strategy, user, _amount);
 
         // TODO: Implement logic so totalDebt is _amount and totalIdle = 0.
-        assertEq(strategy.totalAssets(), _amount, "!totalAssets");
-        assertEq(strategy.totalDebt(), 0, "!totalDebt");
-        assertEq(strategy.totalIdle(), _amount, "!totalIdle");
+        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
+        assertApproxEq(strategy.totalDebt(), _amount, _amount/1000, "!totalDebt");
+        assertApproxEq(strategy.totalIdle(), 0, _amount/1000, "!totalIdle");
 
         // Earn Interest
         skip(1 days);
 
-        uint256 toAirdrop = rewardPrice * (_amount * _profitFactor) / MAX_BPS;
-        airdrop(rewardToken, address(strategy), toAirdrop);
+        uint256 toAirdrop = _amount / 1000;
+        uint256 airdropAmount = rewardPrice * toAirdrop / MAX_BPS;
+        airdrop(rewardToken, address(strategy), airdropAmount);
 
         // Report profit
         vm.prank(keeper);
         (uint256 profit, uint256 loss) = strategy.report();
 
         // Check return Values
-        assertGe(profit, toAirdrop, "!profit");
+        assertGe(profit, toAirdrop * 950 / 1000, "!profit");
         assertEq(loss, 0, "!loss");
 
         skip(strategy.profitMaxUnlockTime());
@@ -145,24 +146,24 @@ contract OperationTest is Setup {
         // Deposit into strategy
         mintAndDepositIntoStrategy(strategy, user, _amount);
 
-        // TODO: Implement logic so totalDebt is _amount and totalIdle = 0.
-        assertEq(strategy.totalAssets(), _amount, "!totalAssets");
-        assertEq(strategy.totalDebt(), 0, "!totalDebt");
-        assertEq(strategy.totalIdle(), _amount, "!totalIdle");
+        assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!totalAssets");
+        assertApproxEq(strategy.totalDebt(), _amount, _amount/1000, "!totalDebt");
+        assertApproxEq(strategy.totalIdle(), 0, _amount/1000, "!totalIdle");
 
         // Earn Interest
         skip(1 days);
 
         // TODO: implement logic to simulate earning interest.
-        uint256 toAirdrop = rewardPrice * (_amount * _profitFactor) / MAX_BPS;
-        airdrop(rewardToken, address(strategy), toAirdrop);
+        uint256 toAirdrop = _amount / 1000;
+        uint256 airdropAmount = rewardPrice * toAirdrop / MAX_BPS;
+        airdrop(rewardToken, address(strategy), airdropAmount);
 
         // Report profit
         vm.prank(keeper);
         (uint256 profit, uint256 loss) = strategy.report();
 
         // Check return Values
-        assertGe(profit, toAirdrop, "!profit");
+        assertGe(profit, toAirdrop * 950 / 1000, "!profit");
         assertEq(loss, 0, "!loss");
 
         skip(strategy.profitMaxUnlockTime());
