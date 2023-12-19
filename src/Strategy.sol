@@ -56,7 +56,6 @@ contract Strategy is BaseStrategy {
     }
 
     function _setInterfaces() internal {
-        router = IUniswapV2Router01(0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff);
         farmToken = IERC20(0xf28164A485B0B2C90639E47b0f377b4a438a16B1);
         IPoolAddressesProvider provider = IPoolAddressesProvider(0xa97684ead0e402dC232d5A977953DF7ECBaB3CDb);
         pool = IPool(0x794a61358D6845594F94dc1DB02A252b5b4814aD);
@@ -64,11 +63,15 @@ contract Strategy is BaseStrategy {
         aToken = IAToken(0x625E7708f30cA75bfd92586e17077590C60eb4cD);
         debtToken = IVariableDebtToken(0x0c84331e39d6658Cd6e6b9ba04736cC4c4734351);  
 
-        v3Router = IRouter(0xf5b509bB0909a69B1c207E495f687a596C168E12);
+        v2Router = IUniswapV2Router01(0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff);
+        router = IRouter(0xf5b509bB0909a69B1c207E495f687a596C168E12);
         gammaVault = IGammaVault(0x3Cc20A6795c4b57d9817399F68E83e71C8626580);
         depositPoint = IUniProxy(0xA42d55074869491D60Ac05490376B74cF19B00e6);
         quickswapPool = IAlgebraPool(0x55CAaBB0d2b704FD0eF8192A7E35D8837e678207);  
         clearance = IClearance(0x676644bB8ae1B48BE85b233b82E84Eb74Fa081a8);
+
+        farmMasterChef = IMasterchef(0x20ec0d06F447d550fC6edee42121bc8C1817b97D);
+
 
     }
 
@@ -77,11 +80,12 @@ contract Strategy is BaseStrategy {
         asset.approve(address(gammaVault), type(uint256).max);        
         ERC20(address(short)).approve(address(pool), type(uint256).max);   
         ERC20(address(short)).approve(address(gammaVault), type(uint256).max);   
-        farmMasterChef = IMasterchef(0x20ec0d06F447d550fC6edee42121bc8C1817b97D);
         ERC20(address(gammaVault)).approve(address(farmMasterChef), type(uint256).max);     
         ERC20(address(farmToken)).approve(address(router), type(uint256).max);
-        asset.approve(address(v3Router), type(uint256).max);        
-        ERC20(address(short)).approve(address(v3Router), type(uint256).max);   
+        ERC20(address(farmToken)).approve(address(v2Router), type(uint256).max);
+
+        asset.approve(address(router), type(uint256).max);        
+        ERC20(address(short)).approve(address(router), type(uint256).max);   
 
 
     }
@@ -114,13 +118,10 @@ contract Strategy is BaseStrategy {
     IERC20 public short;
     uint8 public wantDecimals;
     uint8 public shortDecimals;
-    //IUniswapV2Pair public wantShortLP; // This is public because it helps with unit testing
     IERC20 public farmToken;
     // Contract Interfaces
-    //IUniswapV2Router01 public router;
-    //IStrategyInsurance public insurance;
-    IUniswapV2Router01 public router;
-    IRouter public v3Router;
+    IUniswapV2Router01 public v2Router;
+    IRouter public router;
     IPool public pool;
     IAToken public aToken;
     IVariableDebtToken public debtToken;
@@ -261,21 +262,8 @@ contract Strategy is BaseStrategy {
         return (deposit0Max, deposit1Max);
     }
 
-
-
-    /*
-    function _getMaxValues() public view returns(uint256 deposit0Max, uint256 deposit1Max) {
-        (,,,,,,,, deposit0Max, deposit1Max,,,,) = clearance.positions(address(gammaVault));
-    }
-    */
-
     function _checkMaxAmts(uint256 _amount0 , uint256 _amount1) internal view returns(uint256 , uint256 ) {
-        //(,,,,,,,,, uint256 max0, uint256 max1 , , ,) = IClearance(0x676644bB8ae1B48BE85b233b82E84Eb74Fa081a8).position(address(gammaVault));
-        /*
-        Position memory pos = IClearance(0x676644bB8ae1B48BE85b233b82E84Eb74Fa081a8).position(address(gammaVault));
-        uint256 max0 = pos.deposit0Max;
-        uint256 max1 = pos.deposit1Max;
-        */
+
         (uint256 max0, uint256 max1) = _getMaxValues();
 
         if (_amount0 > max0) {
@@ -372,7 +360,6 @@ contract Strategy is BaseStrategy {
     function balanceDeployed() public view returns (uint256) {
         uint256 oPrice = getOraclePrice();
         return balanceLend() - balanceDebt() + balanceLp() + (balanceShort() * oPrice / 1e18);
-        //return balanceLend() + balanceLp() - balanceDebt();
     }
 
     function balanceLend() public view returns (uint256) {
@@ -424,11 +411,9 @@ contract Strategy is BaseStrategy {
             price = 1e18 * uint256(currentPrice) * uint256(currentPrice) / ((2 ** 96) * (2 ** 96));
         }
         
-        // TO DO CONVERT PRICE TO SAME FORMAT AS ORACLE PRICE 
         return price;
     }
 
-    // debt ratio - used to trigger rebalancing of debt
     function calcDebtRatio() public view returns (uint256) {
         uint256 totalShort;
         if (quickswapPool.token0() == address(asset)) {
@@ -447,12 +432,27 @@ contract Strategy is BaseStrategy {
         return (balanceDebtInShort() * getOraclePrice() / 1e18) * basisPrecision / balanceLend();
     }
 
-
     function _claimAndSellRewards() internal {
         // CLAIM & SELL REWARDS 
         farmMasterChef.harvest(pid, address(this));
-        if (farmToken.balanceOf(address(this)) > 0) {
-            router.swapExactTokensForTokens(farmToken.balanceOf(address(this)), 0, _getTokenOutPath(address(farmToken), address(asset)), address(this), block.timestamp);
+        uint256 _amount = farmToken.balanceOf(address(this));
+        if (_amount > 0) {
+
+            uint256 amountOut = 0;
+            v2Router.swapExactTokensForTokens(_amount, amountOut, _getTokenOutPath(address(farmToken), address(asset)), address(this), block.timestamp);
+
+            /*
+            TO DO - Debug this as currently failing using upgraded router (using old router for now)
+            ExactInputSingleParams memory input;
+
+            input.amountIn = _amount;
+            input.tokenIn = address(farmToken);
+            input.tokenOut = address(asset);
+            input.recipient = address(this);
+            input.deadline = block.timestamp;
+            input.amountOutMinimum = 0;
+            router.exactInputSingle(input);            
+            */
         }
     }
 
@@ -562,7 +562,7 @@ contract Strategy is BaseStrategy {
         input.recipient = address(this);
         input.deadline = block.timestamp;
         input.amountOutMinimum = amountOut*(slippageAdj)/(basisPrecision);
-        v3Router.exactInputSingle(input);
+        router.exactInputSingle(input);
     }
 
     /**
@@ -587,31 +587,9 @@ contract Strategy is BaseStrategy {
         input.tokenOut = address(asset);
         input.recipient = address(this);
         input.deadline = block.timestamp;
-        v3Router.exactInputSingle(input);
+        router.exactInputSingle(input);
 
     }
-
-    function _swapWantShortExact(uint256 _amountOut)
-        internal
-        returns (uint256 _slippageWant)
-    {
-        uint256 amountInWant = _convertShortToWantLP(_amountOut);
-        uint256 amountInMax = (amountInWant*(basisPrecision)/(slippageAdj)) + (10); // add 1 to make up for rounding down
-        //v3Router.exactOutputSingle();
-
-        /*
-        uint256[] memory amounts =
-            router.swapTokensForExactTokens(
-                _amountOut,
-                amountInMax,
-                getTokenOutPath(address(want), address(short)),
-                address(this),
-                now
-            );
-        _slippageWant = amounts[0] - (amountInWant);
-        */
-    }
-
 
     function _convertShortToWantLP(uint256 _amountShort)
         internal

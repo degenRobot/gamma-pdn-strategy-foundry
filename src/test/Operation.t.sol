@@ -43,17 +43,15 @@ contract OperationTest is Setup {
 
         // Deposit into strategy
         mintAndDepositIntoStrategy(strategy, user, _amount);
+        /*
         console.log("Amount : ", _amount);
         console.log("Balance Deployed : ", strategy.balanceDeployed());            
         console.log("Balance LP : ", strategy.balanceLp());
         console.log("Balance Lend : ", strategy.balanceLend());
         console.log("Balance Debt : ", strategy.balanceDebt());
         console.log("Total Assets : ", strategy.totalAssets());
-
-        // TODO: Implement logic so totalDebt is _amount and totalIdle = 0.
+        */
         assertApproxEq(strategy.totalAssets(), _amount, _amount/1000, "!total Assets");
-        //assertEq(strategy.totalDebt(), 0, "!totalDebt");
-        //assertEq(strategy.totalIdle(), _amount, "!totalIdle");
 
         // Earn Interest
         skip(1 days);
